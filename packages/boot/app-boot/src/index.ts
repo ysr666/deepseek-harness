@@ -385,9 +385,25 @@ async function recompose(
     applying = true
     const retried = [...new Set([...running, ...withResolution ? [...ctx.loader.entries()].filter(importFailed) : []])]
     // Group.update replaces its data array and attempts every row it still lists, including failed imports.
+    // Include may update a row's injection options without replacing its Fiber.
+    // Retain the original Fiber identity so other concurrent replacements are untouched.
+    const previousInjections = new Map([...ctx.loader.entries()].map(row => [
+      row, { declaration: JSON.stringify(row.options.inject ?? null), fiber: row.fiber },
+    ] as const))
     const priorData = new Map(retried.map(row => [row, row.parent.data]))
     try {
       await entry.update({ config: { ...includeConfig, patches: prepared } })
+      for (const row of ctx.loader.entries()) {
+        const previous = previousInjections.get(row)
+        if (previous === undefined || previous.declaration === JSON.stringify(row.options.inject ?? null)) continue
+        const fiber = row.fiber
+        // Rebuild only the Fiber that belongs to the earlier dependency list.
+        if (fiber === undefined || fiber !== previous.fiber) continue
+        if (fiber.runtime !== null) row.ctx.registry.delete(fiber.runtime.callback)
+        while (fiber.inertia !== undefined) await fiber.inertia
+        delete row.fiber
+        await row.refresh()
+      }
     } finally {
       // Only rows whose Group did not update still need an explicit retry after the awaited update.
       await resume(ctx, retried.filter(row => row.parent.data === priorData.get(row)))
