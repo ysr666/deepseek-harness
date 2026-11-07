@@ -34,6 +34,7 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
     expect(first?.options.inject).toEqual([stable, ephemeral])
     expect(Object.keys(first?.fiber?.inject ?? {})).toContain(ephemeral)
     const initialState = first?.fiber?.state
+    expect(initialState).toBe(2) // Cordis ACTIVE
 
     await recomposeProfile(current, [], 'dsh-test-bin')
     await current.loader.await()
@@ -49,10 +50,38 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
     expect(Object.keys(reenabled?.fiber?.inject ?? {})).toEqual([stable, ephemeral])
     expect(reenabled?.fiber?.state).toBe(initialState)
 
-    const beforeNoop = reenabled?.fiber?.uid
-    await recomposeProfile(current, overlay, 'dsh-test-bin')
-    await current.loader.await()
-    expect(entry('consumer')?.fiber?.uid).toBe(beforeNoop)
+    // The same dependency edges must survive repeated real Include/HMR
+    // recompositions without accumulating stale Fibers or remounting no-ops.
+    for (let iteration = 0; iteration < 8; iteration++) {
+      const overlayUid = entry('consumer')?.fiber?.uid
+      await recomposeProfile(current, [], 'dsh-test-bin')
+      await current.loader.await()
+      const plain = entry('consumer')
+      expect(plain?.options.inject).toEqual([stable])
+      expect(Object.keys(plain?.fiber?.inject ?? {})).toEqual([stable])
+      expect(plain?.fiber?.state).toBe(2)
+      expect(plain?.fiber?.uid).not.toBe(overlayUid)
+      expect(entry('ready')).toBeUndefined()
+
+      const plainUid = plain?.fiber?.uid
+      await recomposeProfile(current, [], 'dsh-test-bin')
+      await current.loader.await()
+      expect(entry('consumer')?.fiber?.uid).toBe(plainUid)
+
+      await recomposeProfile(current, overlay, 'dsh-test-bin')
+      await current.loader.await()
+      const back = entry('consumer')
+      expect(back?.options.inject).toEqual([stable, ephemeral])
+      expect(Object.keys(back?.fiber?.inject ?? {})).toEqual([stable, ephemeral])
+      expect(back?.fiber?.state).toBe(2)
+      expect(back?.fiber?.uid).not.toBe(plainUid)
+      expect(entry('ready')).toBeDefined()
+
+      const beforeNoop = back?.fiber?.uid
+      await recomposeProfile(current, overlay, 'dsh-test-bin')
+      await current.loader.await()
+      expect(entry('consumer')?.fiber?.uid).toBe(beforeNoop)
+    }
   } finally {
     await ctx?.fiber.dispose()
     rmSync(dir, { recursive: true, force: true })
