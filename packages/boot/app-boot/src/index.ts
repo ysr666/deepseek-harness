@@ -399,9 +399,19 @@ async function recompose(
         const fiber = row.fiber
         // Rebuild only the Fiber that belongs to the earlier dependency list.
         if (fiber === undefined || fiber !== previous.fiber) continue
-        if (fiber.runtime !== null) row.ctx.registry.delete(fiber.runtime.callback)
-        while (fiber.inertia !== undefined) await fiber.inertia
-        delete row.fiber
+        // Dispose the individual Fiber, not its shared plugin Runtime:
+        // other Loader rows may import the same module and remain ACTIVE.
+        // Prevent Loader's self-dispose handler from persisting an intentional
+        // HMR teardown as a user disable. Restore exactly the prior value.
+        const previousDisabled = row.options.disabled
+        row.options.disabled = true
+        try {
+          await fiber.dispose()
+        } finally {
+          if (previousDisabled === undefined) delete row.options.disabled
+          else row.options.disabled = previousDisabled
+        }
+        if (row.fiber === fiber) delete row.fiber
         await row.refresh()
       }
     } finally {
