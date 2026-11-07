@@ -1,5 +1,5 @@
 /** Keep unaffected sibling Loader entries active while a shared plugin's other Fiber is rebuilt. */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -23,6 +23,7 @@ it('preserves an unchanged sibling when two entries share one plugin Runtime', a
     '- id: sibling', '  name: ./consumer.mjs',
     '  inject: [' + stable + ']', '',
   ].join('\n'))
+  const originalProfile = readFileSync(join(dir, 'cordis.yml'), 'utf8')
   const overlay = [
     { insert: [{ id: 'ready', name: './ready.mjs' }] },
     { id: 'changing', name: './consumer.mjs', inject: [stable, ephemeral] },
@@ -62,6 +63,9 @@ it('preserves an unchanged sibling when two entries share one plugin Runtime', a
       expect(runtime.fibers).toHaveLength(2)
       expect(stats.started).toBe(stats.disposed + 2)
       expect(stats.active).toBe(2)
+      expect(entry('changing')?.options.disabled).toBeUndefined()
+      expect(entry('sibling')?.options.disabled).toBeUndefined()
+      expect(readFileSync(join(dir, 'cordis.yml'), 'utf8')).toBe(originalProfile)
     }
   } finally {
     await ctx?.fiber.dispose()
