@@ -1,4 +1,5 @@
 /** Regression: profile bundle HMR must not strand old Fiber injections. */
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,9 +11,12 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
   const file = (name: string, body: string): void => { writeFileSync(join(dir, name), body) }
   const stable = 'stableFor806'
   const ephemeral = 'ephemeralFor806'
+  const lifecycle = { started: 0, disposed: 0, active: 0 }
+  const lifecycleKey = `__dsh806_${randomUUID().replaceAll('-', '')}`
+  ;(globalThis as unknown as Record<string, unknown>)[lifecycleKey] = lifecycle
   file('stable.mjs', "export const name='stable'; export function apply(ctx){ctx.provide('stableFor806', {ok:true})}\n")
   file('ready.mjs', "export const name='ready'; export function apply(ctx){ctx.provide('ephemeralFor806', {ok:true})}\n")
-  file('consumer.mjs', "export const name='consumer'; export const inject=['stableFor806']; export function apply(ctx){ctx.provide('consumerFor806', {ok:true})}\n")
+  file('consumer.mjs', `export const name='consumer'; export const inject=['stableFor806']; export function apply(ctx){ const stats=globalThis[${JSON.stringify(lifecycleKey)}]; stats.started++; ctx.effect(()=>{stats.active++; return()=>{stats.disposed++;stats.active--}});ctx.provide('consumerFor806',{ok:true}) }\n`)
   file('cordis.yml', [
     '- id: stable',
     '  name: ./stable.mjs',
@@ -35,6 +39,7 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
     expect(Object.keys(first?.fiber?.inject ?? {})).toContain(ephemeral)
     const initialState = first?.fiber?.state
     expect(initialState).toBe(2) // Cordis ACTIVE
+    expect(lifecycle.active).toBe(1)
 
     await recomposeProfile(current, [], 'dsh-test-bin')
     await current.loader.await()
@@ -76,6 +81,8 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
       expect(back?.fiber?.state).toBe(2)
       expect(back?.fiber?.uid).not.toBe(plainUid)
       expect(entry('ready')).toBeDefined()
+      expect(lifecycle.active).toBe(1) // no overlapping old and new effects
+      expect(lifecycle.started).toBe(lifecycle.disposed + 1)
 
       const beforeNoop = back?.fiber?.uid
       await recomposeProfile(current, overlay, 'dsh-test-bin')
@@ -84,6 +91,9 @@ it('recreates a consumer Fiber when an injected bundle service is removed', asyn
     }
   } finally {
     await ctx?.fiber.dispose()
+    expect(lifecycle.active).toBe(0) // final shutdown also disposes the last Fiber
+    expect(lifecycle.started).toBe(lifecycle.disposed)
+    delete (globalThis as unknown as Record<string, unknown>)[lifecycleKey]
     rmSync(dir, { recursive: true, force: true })
   }
 })
